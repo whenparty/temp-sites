@@ -1,6 +1,6 @@
 # DTM Cleaning Web - Temp Site
 
-Example temporary site hosted at `dtm-cleaning-web.temp.nii.au`
+Example temporary site hosted at `dtm-cleaning.when.party`
 
 ## Stack
 
@@ -11,13 +11,13 @@ Example temporary site hosted at `dtm-cleaning-web.temp.nii.au`
 ## Local Development
 
 ```bash
-cd projects/dtm-cleaning-web
+cd projects/dtm-cleaning
 
 # Build a local image for iteration
-docker build -t dtm-cleaning-web:dev .
+docker build -t dtm-cleaning:dev .
 
 # Run through compose (uses the IMAGE env var if provided)
-IMAGE=dtm-cleaning-web:dev docker compose up -d
+IMAGE=dtm-cleaning:dev docker compose up -d
 
 # Follow logs
 docker compose logs -f
@@ -28,17 +28,17 @@ docker compose down -v
 
 ## Deployment
 
-Automatically deployed via GitHub Actions when changes are pushed to `projects/dtm-cleaning-web/`
+Automatically deployed via GitHub Actions when changes are pushed to `projects/dtm-cleaning/`
 
 ## Accessing the Site
 
-- Production: https://dtm-cleaning-web.temp.nii.au
+- Production: https://dtm-cleaning.when.party
 - Local (via Traefik): Configure local DNS or hosts file to point to localhost
 
 ## File Structure
 
 ```
-dtm-cleaning-web/
+dtm-cleaning/
 ├── Dockerfile       # Builds the GHCR image
 ├── compose.yml      # Service definition + Traefik labels
 ├── site/            # Static website files

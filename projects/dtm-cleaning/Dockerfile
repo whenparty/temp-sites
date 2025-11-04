@@ -1,4 +1,4 @@
-FROM nginx:alpine
+FROM nginx:1.29.3-alpine
 
 # Copy static site content
 COPY site/ /usr/share/nginx/html/

@@ -1,0 +1,67 @@
+name: traefik-tempsites
+
+services:
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik-tempsites
+    restart: unless-stopped
+    command:
+      # Docker provider configuration
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=wp_tempsites"
+
+      # Entrypoints
+      - "--entrypoints.web.address=:8000"
+
+      # Logging
+      - "--log.level=INFO"
+      - "--accesslog=true"
+      - "--accesslog.filepath=/var/log/traefik/access.log"
+      - "--log.filepath=/var/log/traefik/traefik.log"
+
+      # API and dashboard
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+
+      # Health check endpoint
+      - "--ping=true"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-logs:/var/log/traefik
+
+    env_file:
+      - .env        # managed by GitHub Actions
+      - .env.local  # user-maintained allow list (auto-created on deploy)
+
+    networks:
+      - wp_tempsites
+
+    labels:
+      # Enable dashboard on traefik.when.party
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.when.party`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=web"
+      # Chain auth + IP allow list middlewares
+      - "traefik.http.routers.dashboard.middlewares=dashboard-auth,dashboard-ipallow"
+      # Basic auth middleware (credentials from environment variable)
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:-}"
+      # IP allow list middleware (override via .env.local when access is needed)
+      - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.sourcerange=${TRAEFIK_DASHBOARD_IP_ALLOW:-127.0.0.1/32}"
+      - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.ipStrategy.depth=1"
+
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  traefik-logs:
+
+networks:
+  wp_tempsites:
+    external: true

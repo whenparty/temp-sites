@@ -1,0 +1,101 @@
+name: Deploy Traefik Router
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'traefik/**'
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: 'Force redeploy Traefik'
+        required: false
+        default: 'false'
+
+env:
+  DEPLOY_DIR: /opt/services/whenparty/tempsites/traefik
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Copy Traefik files to VPS
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_DEPLOY_KEY }}
+          source: "traefik/*"
+          target: "${{ env.DEPLOY_DIR }}/"
+
+      - name: Generate dashboard auth hash
+        id: auth
+        run: |
+          # Install htpasswd
+          sudo apt-get update
+          sudo apt-get install -y apache2-utils
+
+          # Generate hash from secrets
+          HASH=$(htpasswd -nb "${{ secrets.TRAEFIK_DASHBOARD_USER }}" "${{ secrets.TRAEFIK_DASHBOARD_PASSWORD }}")
+
+          # Escape $ for docker-compose ($ becomes $$)
+          ESCAPED=$(echo "$HASH" | sed 's/\$/\$\$/g')
+
+          # Output as GitHub Actions variable (mask it for security)
+          echo "::add-mask::$ESCAPED"
+          echo "hash=$ESCAPED" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Traefik to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          TRAEFIK_DASHBOARD_AUTH: ${{ steps.auth.outputs.hash }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_DEPLOY_KEY }}
+          envs: TRAEFIK_DASHBOARD_AUTH
+          script: |
+            set -euo pipefail
+
+            DEPLOY_DIR="${{ env.DEPLOY_DIR }}"
+
+            # Ensure deployment directory exists (scp step creates it if missing)
+            mkdir -p "$DEPLOY_DIR"
+
+            cd "$DEPLOY_DIR"
+
+            # Create .env file with auth credentials
+            cat > .env << EOF
+            TRAEFIK_DASHBOARD_AUTH=$TRAEFIK_DASHBOARD_AUTH
+            EOF
+
+            chmod 600 .env
+
+            # Ensure .env.local exists with default loopback allow list (skip if user already created one)
+            if [ ! -f ".env.local" ]; then
+              cat > .env.local << 'EOF'
+TRAEFIK_DASHBOARD_IP_ALLOW=127.0.0.1/32
+EOF
+              chmod 600 .env.local
+            fi
+
+            # Ensure wp_tempsites network exists
+            docker network inspect wp_tempsites >/dev/null 2>&1 || docker network create wp_tempsites
+
+            # Deploy Traefik
+            docker compose pull
+            docker compose up -d
+
+            # Verify it's running
+            sleep 5
+            docker ps | grep traefik-tempsites || {
+              echo "Error: Traefik container not running"
+              docker logs traefik-tempsites
+              exit 1
+            }
+
+            echo "Traefik deployed successfully"
+            docker logs --tail 20 traefik-tempsites
