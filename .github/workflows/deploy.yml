@@ -1,0 +1,179 @@
+name: Deploy Temp Sites
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/**'
+      - '.github/workflows/deploy.yml'
+
+env:
+  REGISTRY: ghcr.io
+  GITHUB_ORG: ${{ github.repository_owner }}
+  DEPLOY_DIR: /opt/services/whenparty/tempsites
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.changes.outputs.projects }}
+      has_project_changes: ${{ steps.changes.outputs.has_project_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect project changes
+        id: changes
+        run: |
+          set -euo pipefail
+
+          BASE_SHA="${{ github.event.before }}"
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BASE_SHA=$(git rev-list --max-parents=0 "${{ github.sha }}")
+          fi
+
+          changed_files=$(git diff --name-only "$BASE_SHA" "${{ github.sha }}" -- projects/ || true)
+
+          if [ -z "$changed_files" ]; then
+            echo "projects=[]" >> "$GITHUB_OUTPUT"
+            echo "has_project_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No project changes detected"
+            exit 0
+          fi
+
+          projects=$(echo "$changed_files" | awk -F/ '{if ($1 == "projects" && $2 != "") print $2}' | sort -u | jq -R . | jq -s -c .)
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+          echo "has_project_changes=true" >> "$GITHUB_OUTPUT"
+          echo "Changed projects: $projects"
+
+  build-and-deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_project_changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJson(needs.detect-changes.outputs.projects) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Dockerfile
+        id: dockerfile
+        run: |
+          if [ -f "projects/${{ matrix.project }}/Dockerfile" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Warning: No Dockerfile in projects/${{ matrix.project }}/"
+          fi
+
+      - name: Compute image references
+        id: image
+        run: |
+          image_base="${{ env.REGISTRY }}/${{ env.GITHUB_ORG }}/temp-${{ matrix.project }}"
+          echo "base=$image_base" >> "$GITHUB_OUTPUT"
+          echo "sha=${image_base}:sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "latest=${image_base}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.dockerfile.outputs.exists == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: steps.dockerfile.outputs.exists == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        if: steps.dockerfile.outputs.exists == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: projects/${{ matrix.project }}
+          push: true
+          tags: |
+            ${{ steps.image.outputs.latest }}
+            ${{ steps.image.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Make image public
+        if: steps.dockerfile.outputs.exists == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ env.GITHUB_ORG }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          PACKAGE: temp-${{ matrix.project }}
+        run: |
+          set -euo pipefail
+
+          if [ "$OWNER_TYPE" = "Organization" ]; then
+            gh api \
+              --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              "/orgs/$OWNER/packages/container/$PACKAGE/visibility" \
+              -f visibility=public
+          else
+            gh api \
+              --method PUT \
+              -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/$PACKAGE/visibility" \
+              -f visibility=public
+          fi
+
+      - name: Determine deploy image
+        id: deploy_image
+        run: |
+          if [ "${{ steps.dockerfile.outputs.exists }}" = "true" ]; then
+            echo "value=${{ steps.image.outputs.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy project
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_DEPLOY_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -euo pipefail
+
+            DEPLOY_DIR="${{ env.DEPLOY_DIR }}"
+            PROJECT="${{ matrix.project }}"
+            IMAGE_OVERRIDE="${{ steps.deploy_image.outputs.value }}"
+            REPOSITORY="${{ github.repository }}"
+            REF_NAME="${{ github.ref_name }}"
+            COMMIT_SHA="${{ github.sha }}"
+
+            mkdir -p "$DEPLOY_DIR"
+
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              rm -rf "$DEPLOY_DIR"
+              git clone --depth 1 git@github.com:"$REPOSITORY".git "$DEPLOY_DIR"
+            fi
+
+            cd "$DEPLOY_DIR"
+            git fetch --depth 1 origin
+            git checkout "$REF_NAME"
+            git reset --hard "$COMMIT_SHA"
+
+            docker network inspect tempsites >/dev/null 2>&1 || docker network create tempsites
+
+            cd "projects/$PROJECT"
+
+            if [ -n "$IMAGE_OVERRIDE" ]; then
+              IMAGE="$IMAGE_OVERRIDE" docker compose up -d --remove-orphans
+            else
+              docker compose up -d --remove-orphans
+            fi
+
+            docker image prune -f
