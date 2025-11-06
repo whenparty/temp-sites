@@ -85,6 +85,14 @@ jobs:
             # Ensure wp_tempsites network exists
             docker network inspect wp_tempsites >/dev/null 2>&1 || docker network create wp_tempsites
 
+            # Export dashboard allow list so compose interpolation picks it up
+            if [ -f ".env.local" ]; then
+              if ALLOW_LINE=$(grep -m1 '^TRAEFIK_DASHBOARD_IP_ALLOW=' .env.local); then
+                ALLOW_VALUE=${ALLOW_LINE#*=}
+                export TRAEFIK_DASHBOARD_IP_ALLOW="$ALLOW_VALUE"
+              fi
+            fi
+
             # Deploy Traefik
             docker compose pull
             docker compose up -d
