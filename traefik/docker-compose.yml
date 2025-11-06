@@ -50,7 +50,7 @@ services:
       - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:-}"
       # IP allow list middleware (override via .env.local when access is needed)
       - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.sourcerange=${TRAEFIK_DASHBOARD_IP_ALLOW:-127.0.0.1/32}"
-      - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.ipStrategy.depth=1"
+      - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.ipStrategy.depth=2"
 
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]

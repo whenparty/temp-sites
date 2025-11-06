@@ -13,7 +13,7 @@ on:
         default: 'false'
 
 env:
-  DEPLOY_DIR: /opt/services/whenparty/tempsites/traefik
+  DEPLOY_ROOT: /opt/services/whenparty/tempsites
 
 jobs:
   deploy:
@@ -28,12 +28,15 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_DEPLOY_KEY }}
-          source: "traefik/*"
-          target: "${{ env.DEPLOY_DIR }}/"
+          source: "traefik/**"
+          target: "${{ env.DEPLOY_ROOT }}/traefik/"
+          strip_components: 1
 
       - name: Generate dashboard auth hash
         id: auth
         run: |
+          set -euo pipefail
+
           # Install htpasswd
           sudo apt-get update
           sudo apt-get install -y apache2-utils
@@ -60,25 +63,22 @@ jobs:
           script: |
             set -euo pipefail
 
-            DEPLOY_DIR="${{ env.DEPLOY_DIR }}"
+            DEPLOY_ROOT="${{ env.DEPLOY_ROOT }}"
+            TRAEFIK_DIR="$DEPLOY_ROOT/traefik"
 
             # Ensure deployment directory exists (scp step creates it if missing)
-            mkdir -p "$DEPLOY_DIR"
+            mkdir -p "$TRAEFIK_DIR"
 
-            cd "$DEPLOY_DIR"
+            cd "$TRAEFIK_DIR"
 
             # Create .env file with auth credentials
-            cat > .env << EOF
-            TRAEFIK_DASHBOARD_AUTH=$TRAEFIK_DASHBOARD_AUTH
-            EOF
+            printf 'TRAEFIK_DASHBOARD_AUTH=%s\n' "$TRAEFIK_DASHBOARD_AUTH" > .env
 
             chmod 600 .env
 
             # Ensure .env.local exists with default loopback allow list (skip if user already created one)
             if [ ! -f ".env.local" ]; then
-              cat > .env.local << 'EOF'
-TRAEFIK_DASHBOARD_IP_ALLOW=127.0.0.1/32
-EOF
+              printf 'TRAEFIK_DASHBOARD_IP_ALLOW=127.0.0.1/32\n' > .env.local
               chmod 600 .env.local
             fi
 
