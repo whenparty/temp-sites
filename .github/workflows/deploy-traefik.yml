@@ -7,10 +7,10 @@ on:
       - 'traefik/**'
   workflow_dispatch:
     inputs:
-      force_deploy:
-        description: 'Force redeploy Traefik'
+      dashboard_ip_allow:
+        description: 'IP whitelist for dashboard (e.g., 0.0.0.0/0 or 1.2.3.4/32)'
         required: false
-        default: 'false'
+        default: ''
 
 env:
   DEPLOY_ROOT: /opt/services/whenparty/tempsites
@@ -55,11 +55,12 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           TRAEFIK_DASHBOARD_AUTH: ${{ steps.auth.outputs.hash }}
+          DASHBOARD_IP_ALLOW: ${{ github.event.inputs.dashboard_ip_allow }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_DEPLOY_KEY }}
-          envs: TRAEFIK_DASHBOARD_AUTH
+          envs: TRAEFIK_DASHBOARD_AUTH,DASHBOARD_IP_ALLOW
           script: |
             set -euo pipefail
 
@@ -76,16 +77,34 @@ jobs:
 
             chmod 600 .env
 
-            # Ensure .env.local exists with default loopback allow list (skip if user already created one)
-            if [ ! -f ".env.local" ]; then
+            # Manage .env.local for IP whitelist
+            if [ -n "$DASHBOARD_IP_ALLOW" ]; then
+              # Workflow input provided - update/create .env.local with specified IP allow list
+              printf 'TRAEFIK_DASHBOARD_IP_ALLOW=%s\n' "$DASHBOARD_IP_ALLOW" > .env.local
+              chmod 600 .env.local
+              echo "Updated .env.local with IP allow list: $DASHBOARD_IP_ALLOW"
+            elif [ ! -f ".env.local" ]; then
+              # No workflow input and .env.local doesn't exist - create with secure default
               printf 'TRAEFIK_DASHBOARD_IP_ALLOW=127.0.0.1/32\n' > .env.local
               chmod 600 .env.local
+              echo "Created .env.local with default (localhost only)"
+            else
+              echo "Preserving existing .env.local configuration"
             fi
 
             # Ensure wp_tempsites network exists
             docker network inspect wp_tempsites >/dev/null 2>&1 || docker network create wp_tempsites
 
-            # Export dashboard allow list so compose interpolation picks it up
+            # Export environment variables so docker-compose interpolation picks them up
+            # Export auth credentials from .env
+            if [ -f ".env" ]; then
+              if AUTH_LINE=$(grep -m1 '^TRAEFIK_DASHBOARD_AUTH=' .env); then
+                AUTH_VALUE=${AUTH_LINE#*=}
+                export TRAEFIK_DASHBOARD_AUTH="$AUTH_VALUE"
+              fi
+            fi
+
+            # Export dashboard allow list from .env.local
             if [ -f ".env.local" ]; then
               if ALLOW_LINE=$(grep -m1 '^TRAEFIK_DASHBOARD_IP_ALLOW=' .env.local); then
                 ALLOW_VALUE=${ALLOW_LINE#*=}
