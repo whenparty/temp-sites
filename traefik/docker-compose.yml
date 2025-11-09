@@ -20,8 +20,11 @@ services:
       - "traefik.http.routers.dashboard.rule=Host(`traefik.when.party`)"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=web"
-      # Chain auth
-      - "traefik.http.routers.dashboard.middlewares=dashboard-auth"
+      # Chain both middlewares
+      - "traefik.http.routers.dashboard.middlewares=dashboard-ipallowlist,dashboard-auth"
+      # IP whitelist - increase depth to read through Cloudflare + Nginx
+      - "traefik.http.middlewares.dashboard-ipallowlist.ipallowlist.sourcerange=${TRAEFIK_DASHBOARD_IP_WHITELIST:-}"
+      - "traefik.http.middlewares.dashboard-ipallowlist.ipallowlist.ipstrategy.depth=2"
       # Basic auth middleware (credentials from environment variable)
       - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:-}"
 

@@ -6,6 +6,13 @@ on:
     paths:
       - 'traefik/**'
   workflow_dispatch:
+    inputs:
+      ip_whitelist:
+        description: 'IP whitelist (comma-separated, e.g., 1.2.3.4/32,5.6.7.8/32 or 0.0.0.0/0 for all)'
+        required: false
+        default: '127.0.0.1/32'
+        type: string
+
 
 env:
   TRAEFIK_DIR: /opt/services/whenparty/tempsites/traefik
@@ -59,11 +66,12 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           DASHBOARD_AUTH_HASH: ${{ steps.auth.outputs.hash }}
+          DASHBOARD_IP_WHITELIST: ${{ inputs.ip_whitelist }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_DEPLOY_KEY }}
-          envs: DASHBOARD_AUTH_HASH
+          envs: DASHBOARD_AUTH_HASH,DASHBOARD_IP_WHITELIST
           script: |
             set -euo pipefail
 
@@ -71,6 +79,7 @@ jobs:
 
             # Create .env file with auth credentials
             printf 'TRAEFIK_DASHBOARD_AUTH=%s\n' "$DASHBOARD_AUTH_HASH" > .env
+            printf 'TRAEFIK_DASHBOARD_IP_WHITELIST=%s\n' "$DASHBOARD_IP_WHITELIST" >> .env
             chmod 600 .env
 
             # Ensure wp_tempsites network exists

@@ -6,6 +6,9 @@ providers:
 entryPoints:
   web:
     address: ":8000"
+    forwardedHeaders:
+      trustedIPs:
+        - 172.16.0.0/12 # All Docker networks
 
 api:
   dashboard: true
