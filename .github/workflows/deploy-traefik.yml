@@ -6,14 +6,9 @@ on:
     paths:
       - 'traefik/**'
   workflow_dispatch:
-    inputs:
-      dashboard_ip_allow:
-        description: 'IP whitelist for dashboard (e.g., 0.0.0.0/0 or 1.2.3.4/32)'
-        required: false
-        default: ''
 
 env:
-  DEPLOY_ROOT: /opt/services/whenparty/tempsites
+  TRAEFIK_DIR: /opt/services/whenparty/tempsites/traefik
 
 jobs:
   deploy:
@@ -21,29 +16,15 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Copy Traefik files to VPS
-        uses: appleboy/scp-action@v0.1.5
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_DEPLOY_KEY }}
-          source: "traefik/**"
-          target: "${{ env.DEPLOY_ROOT }}/traefik/"
-          strip_components: 1
-
+     
       - name: Generate dashboard auth hash
         id: auth
         run: |
           set -euo pipefail
 
-          # Install htpasswd
-          sudo apt-get update
-          sudo apt-get install -y apache2-utils
-
           # Generate hash from secrets
-          HASH=$(htpasswd -nb "${{ secrets.TRAEFIK_DASHBOARD_USER }}" "${{ secrets.TRAEFIK_DASHBOARD_PASSWORD }}")
-
+          HASH="${{ secrets.TRAEFIK_DASHBOARD_USER }}":$(openssl passwd -apr1 "${{ secrets.TRAEFIK_DASHBOARD_PASSWORD }}")
+         
           # Escape $ for docker-compose ($ becomes $$)
           ESCAPED=$(echo "$HASH" | sed 's/\$/\$\$/g')
 
@@ -51,78 +32,82 @@ jobs:
           echo "::add-mask::$ESCAPED"
           echo "hash=$ESCAPED" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy Traefik to VPS
+      - name: Create deployment directory
         uses: appleboy/ssh-action@v1.2.0
-        env:
-          TRAEFIK_DASHBOARD_AUTH: ${{ steps.auth.outputs.hash }}
-          DASHBOARD_IP_ALLOW: ${{ github.event.inputs.dashboard_ip_allow }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_DEPLOY_KEY }}
-          envs: TRAEFIK_DASHBOARD_AUTH,DASHBOARD_IP_ALLOW
+          script: |
+            set -euo pipefail
+            
+            mkdir -p "${{ env.TRAEFIK_DIR }}"
+            echo "✅ Directory ready: ${{ env.TRAEFIK_DIR }}"
+
+      - name: Copy Traefik files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_DEPLOY_KEY }}
+          source: "traefik/docker-compose.yml,traefik/traefik.yml"
+          target: ${{ env.TRAEFIK_DIR }}
+          overwrite: true
+          strip_components: 1
+
+      - name: Deploy Traefik to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DASHBOARD_AUTH_HASH: ${{ steps.auth.outputs.hash }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_DEPLOY_KEY }}
+          envs: DASHBOARD_AUTH_HASH
           script: |
             set -euo pipefail
 
-            DEPLOY_ROOT="${{ env.DEPLOY_ROOT }}"
-            TRAEFIK_DIR="$DEPLOY_ROOT/traefik"
-
-            # Ensure deployment directory exists (scp step creates it if missing)
-            mkdir -p "$TRAEFIK_DIR"
-
-            cd "$TRAEFIK_DIR"
+            cd "${{ env.TRAEFIK_DIR }}"
 
             # Create .env file with auth credentials
-            printf 'TRAEFIK_DASHBOARD_AUTH=%s\n' "$TRAEFIK_DASHBOARD_AUTH" > .env
-
+            printf 'TRAEFIK_DASHBOARD_AUTH=%s\n' "$DASHBOARD_AUTH_HASH" > .env
             chmod 600 .env
 
-            # Manage .env.local for IP whitelist
-            if [ -n "$DASHBOARD_IP_ALLOW" ]; then
-              # Workflow input provided - update/create .env.local with specified IP allow list
-              printf 'TRAEFIK_DASHBOARD_IP_ALLOW=%s\n' "$DASHBOARD_IP_ALLOW" > .env.local
-              chmod 600 .env.local
-              echo "Updated .env.local with IP allow list: $DASHBOARD_IP_ALLOW"
-            elif [ ! -f ".env.local" ]; then
-              # No workflow input and .env.local doesn't exist - create with secure default
-              printf 'TRAEFIK_DASHBOARD_IP_ALLOW=127.0.0.1/32\n' > .env.local
-              chmod 600 .env.local
-              echo "Created .env.local with default (localhost only)"
-            else
-              echo "Preserving existing .env.local configuration"
-            fi
-
             # Ensure wp_tempsites network exists
-            docker network inspect wp_tempsites >/dev/null 2>&1 || docker network create wp_tempsites
+            docker network inspect wp_tempsites >/dev/null 2>&1 || \
+              docker network create wp_tempsites
 
-            # Export environment variables so docker-compose interpolation picks them up
-            # Export auth credentials from .env
-            if [ -f ".env" ]; then
-              if AUTH_LINE=$(grep -m1 '^TRAEFIK_DASHBOARD_AUTH=' .env); then
-                AUTH_VALUE=${AUTH_LINE#*=}
-                export TRAEFIK_DASHBOARD_AUTH="$AUTH_VALUE"
-              fi
-            fi
+            # Clean up old containers
+            echo "🧹 Cleaning up old Traefik container..."
+            docker compose -p traefik-tempsites down || true
 
-            # Export dashboard allow list from .env.local
-            if [ -f ".env.local" ]; then
-              if ALLOW_LINE=$(grep -m1 '^TRAEFIK_DASHBOARD_IP_ALLOW=' .env.local); then
-                ALLOW_VALUE=${ALLOW_LINE#*=}
-                export TRAEFIK_DASHBOARD_IP_ALLOW="$ALLOW_VALUE"
-              fi
-            fi
-
-            # Deploy Traefik
+            # Pull latest image
+            echo "📥 Pulling latest Traefik image..."
             docker compose pull
-            docker compose up -d
 
-            # Verify it's running
-            sleep 5
-            docker ps | grep traefik-tempsites || {
-              echo "Error: Traefik container not running"
-              docker logs traefik-tempsites
-              exit 1
-            }
-
-            echo "Traefik deployed successfully"
-            docker logs --tail 20 traefik-tempsites
+            # Deploy with zero-downtime
+            echo "🚀 Deploying Traefik..."
+            docker compose up -d --force-recreate --remove-orphans
+            
+            docker ps --filter name=traefik-tempsites --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+            
+      - name: Verify dashboard accessibility
+        run: |
+          set -euo pipefail
+          
+          echo "⏳ Waiting for dashboard to be ready..."
+          sleep 5
+          
+          # Check if dashboard responds (should be 401 without auth)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://traefik.when.party || echo "000")
+          
+          if [ "$HTTP_CODE" = "401" ]; then
+            echo "✅ Dashboard is accessible and protected with basic auth"
+          elif [ "$HTTP_CODE" = "200" ]; then
+            echo "⚠️  Warning: Dashboard returned 200 (auth might not be working)"
+            exit 1
+          else
+            echo "⚠️  Dashboard returned HTTP $HTTP_CODE (expected 401)"
+            echo "This might be temporary - check manually at https://traefik.when.party"
+          fi

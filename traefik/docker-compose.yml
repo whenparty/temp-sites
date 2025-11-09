@@ -2,39 +2,14 @@ name: traefik-tempsites
 
 services:
   traefik:
-    image: traefik:v3.0
+    image: traefik:v3.5.4
     container_name: traefik-tempsites
     restart: unless-stopped
-    command:
-      # Docker provider configuration
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=wp_tempsites"
-
-      # Entrypoints
-      - "--entrypoints.web.address=:8000"
-      - "--entrypoints.web.forwardedHeaders.trustedIPs=173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32"
-
-      # Logging
-      - "--log.level=INFO"
-      - "--accesslog=true"
-      - "--accesslog.filepath=/var/log/traefik/access.log"
-      - "--log.filepath=/var/log/traefik/traefik.log"
-
-      # API and dashboard
-      - "--api.dashboard=true"
-      - "--api.insecure=false"
-
-      # Health check endpoint
-      - "--ping=true"
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-logs:/var/log/traefik
-
-    env_file:
-      - .env        # managed by GitHub Actions
-      - .env.local  # user-maintained allow list (auto-created on deploy)
+      - ./traefik.yml:/traefik.yml:ro
 
     networks:
       - wp_tempsites
@@ -45,13 +20,10 @@ services:
       - "traefik.http.routers.dashboard.rule=Host(`traefik.when.party`)"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=web"
-      # Chain auth + IP allow list middlewares
-      - "traefik.http.routers.dashboard.middlewares=dashboard-auth,dashboard-ipallow"
+      # Chain auth
+      - "traefik.http.routers.dashboard.middlewares=dashboard-auth"
       # Basic auth middleware (credentials from environment variable)
       - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:-}"
-      # IP allow list middleware (override via .env.local when access is needed)
-      - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.sourcerange=${TRAEFIK_DASHBOARD_IP_ALLOW:-127.0.0.1/32}"
-      - "traefik.http.middlewares.dashboard-ipallow.ipwhitelist.ipStrategy.depth=2"
 
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
